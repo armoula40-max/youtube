@@ -1,92 +1,79 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import subprocess
 import os
 import uuid
 import time
+import shutil
 from pathlib import Path
 
 app = Flask(__name__)
 CORS(app)
 
+# المسارات
 DOWNLOAD_DIR = Path("/app/downloads")
 OUTPUT_DIR = Path("/app/output")
-DOWNLOAD_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-def cleanup_old_files():
-    current_time = time.time()
-    for folder in [DOWNLOAD_DIR, OUTPUT_DIR]:
-        for file in folder.glob("*"):
-            if file.is_file() and (current_time - file.stat().st_mtime) > 1800:
-                file.unlink()
+DOWNLOAD_DIR.mkdir(exist_ok=True, mode=0o755)
+OUTPUT_DIR.mkdir(exist_ok=True, mode=0o755)
 
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "service": "yt-dlp + ffmpeg API ✅",
-        "endpoints": {"POST /download": "YouTube download + trim"}
+        "status": "yt-dlp API ✅",
+        "endpoints": ["/health", "/download (POST)"],
+        "example": '{"url": "https://youtube.com/watch?v=dQw4w9WgXcQ"}'
     })
 
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "OK", "yt-dlp": "ready"})
+
 @app.route('/download', methods=['POST'])
-def download_video():
-    cleanup_old_files()
-    
+def download():
     try:
         data = request.get_json()
-        if not data or 'url' not in data:
-            return jsonify({"error": "Missing 'url'"}), 400
+        url = data.get('url')
+        if not url:
+            return jsonify({"error": "Missing URL"}), 400
         
-        video_url = data['url']
-        start_time = data.get('start_time')
-        end_time = data.get('end_time')
-        file_name = data.get('file_name', str(uuid.uuid4()))
+        # إنشاء اسم ملف فريد
+        file_id = str(uuid.uuid4())[:8]
+        temp_file = f"/tmp/{file_id}.%(ext)s"
+        output_file = f"/tmp/{file_id}_output.mp4"
         
-        download_path = DOWNLOAD_DIR / f"{uuid.uuid4()}.%(ext)s"
-        output_path = OUTPUT_DIR / f"{file_name}.mp4"
-        
-        # yt-dlp download
-        yt_dlp_cmd = [
+        # yt-dlp تحميل
+        cmd = [
             "yt-dlp", "-f", "best[height<=720]", 
-            "-o", str(download_path), video_url
+            "--no-playlist", "-o", temp_file, url
         ]
-        result = subprocess.run(yt_dlp_cmd, capture_output=True, text=True, timeout=300)
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if result.returncode != 0:
-            return jsonify({"error": result.stderr}), 500
+            return jsonify({"error": "Download failed", "log": result.stderr}), 500
         
-        # Find downloaded file
-        downloaded_file = list(DOWNLOAD_DIR.glob("*.mp4"))[0]
+        # البحث عن الملف المحمل
+        temp_path = Path("/tmp").glob(f"{file_id}.*")
+        downloaded = next(temp_path, None)
         
-        if start_time and end_time:
-            duration = end_time - start_time
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-ss", str(start_time), 
-                "-i", str(downloaded_file), "-t", str(duration),
-                "-c", "copy", str(output_path)
-            ]
-            subprocess.run(ffmpeg_cmd, capture_output=True, timeout=120)
-            downloaded_file.unlink()
-        else:
-            downloaded_file.rename(output_path)
+        if not downloaded:
+            return jsonify({"error": "No file downloaded"}), 500
         
-        download_url = f"{request.url_root.rstrip('/')}/files/{output_path.name}"
+        # نسخ للإخراج
+        shutil.copy2(downloaded, output_file)
         
         return jsonify({
             "status": "success",
-            "video_url": download_url,
-            "file_name": output_path.name
+            "file": f"{file_id}_output.mp4",
+            "download_url": f"{request.host_url.rstrip('/')}/files/{Path(output_file).name}"
         })
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/files/<filename>', methods=['GET'])
-def serve_file(filename):
-    file_path = OUTPUT_DIR / filename
-    if file_path.exists():
-        return send_file(file_path, as_attachment=True)
-    return "File not found", 404
+@app.route('/files/<filename>')
+def get_file(filename):
+    return send_from_directory("/tmp", filename, as_attachment=True)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
