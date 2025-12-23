@@ -1,15 +1,18 @@
+FROM python:3.11-slim
 
-FROM n8nio/n8n:latest
+RUN apt-get update && \
+    apt-get install -y ffmpeg curl && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-USER root
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    chmod +x /usr/local/bin/yt-dlp
 
-RUN if command -v apk >/dev/null; then \
-        apk add --no-cache python3 py3-pip ffmpeg; \
-    elif command -v apt-get >/dev/null; then \
-        apt-get update && apt-get install -y python3 python3-pip ffmpeg && rm -rf /var/lib/apt/lists/*; \
-    elif command -v yum >/dev/null; then \
-        yum install -y python3 python3-pip ffmpeg; \
-    fi && \
-    pip3 install --no-cache-dir yt-dlp
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+RUN mkdir -p /app/downloads /app/output
 
-USER node
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "600", "--workers", "2", "api:app"]
+
