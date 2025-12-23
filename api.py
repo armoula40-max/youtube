@@ -17,7 +17,13 @@ def home():
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "OK", "timestamp": time.time()})
+    try:
+        # استخدم المسار النسبي فقط
+        result = subprocess.run(["./yt-dlp", "--version"], capture_output=True, text=True)
+        yt_version = result.stdout.strip() if result.returncode == 0 else "not ready"
+    except:
+        yt_version = "error"
+    return jsonify({"status": "OK", "yt-dlp": yt_version})
 
 @app.route('/download', methods=['POST'])
 def download():
@@ -28,16 +34,19 @@ def download():
             return jsonify({"error": "Missing URL"}), 400
         
         file_id = str(uuid.uuid4())[:8]
-        output_pattern = f"/tmp/{file_id}.%(ext)s"
+        output_file = f"/tmp/{file_id}.%(ext)s"
         
-        # yt-dlp
-        cmd = ["yt-dlp", "-f", "best[height<=720]", "--no-playlist", "-o", output_pattern, url]
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd="/app", timeout=300)
+        # بدون cwd="/app" ← هذا السبب!
+        cmd = ["./yt-dlp", "-f", "best[height<=720]", "--no-playlist", "-o", output_file, url]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if result.returncode != 0:
-            return jsonify({"error": "Download failed", "log": result.stderr[:500]}), 500
+            return jsonify({
+                "error": "Download failed", 
+                "log": result.stderr[:300]
+            }), 500
         
-        # البحث عن الملف
+        # البحث في /tmp
         files = glob.glob(f"/tmp/{file_id}.*")
         if not files:
             return jsonify({"error": "No file found"}), 500
